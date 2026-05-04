@@ -61,7 +61,7 @@ WEBHOOK_AVATAR=https://example.com/avatar.png
 
 - `EMBED_LINK_URL`: Custom URL for Discord embed links (defaults to `STATUS_PAGE_URL`)
 - `WEBHOOK_USERNAME`: Username displayed in Discord messages (defaults to "KumaSentinel", set to "none" to disable)
-- `WEBHOOK_AVATAR`: Avatar URL for Discord messages (defaults to built-in avatar, set to "none" to disable)
+- `WEBHOOK_AVATAR`: Avatar URL for Discord messages (set to "none" to disable)
 
 ### Running the Script
 
@@ -78,7 +78,7 @@ This script is designed to run as a cronjob for periodic monitoring. The recomme
 ```
 
 > [!NOTE]
-> This will does scrape monitor status since discord up/down notifications are already a feature of uptime kuma
+> This script will not scrape monitor status since discord up/down notifications are already a feature of uptime kuma
 
 ## Credits
 
