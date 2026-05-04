@@ -76,7 +76,7 @@ def load_state() -> dict:
     if STATE_FILE.exists():
         with open(STATE_FILE) as f:
             return json.load(f)
-    return {"last_incident": None, "last_maintenance": {}}
+    return {"last_incident": None, "last_incident_post_successful": True, "last_maintenance": {}}
 
 
 def save_state(state: dict):
@@ -106,7 +106,8 @@ def html_to_discord_markdown(html_content: str) -> str:
     return text.strip()
 
 
-def post_to_discord(payload: dict):
+def post_to_discord(payload: dict) -> bool:
+    """Post payload to Discord webhook. Returns True if successful (200 or 204), False otherwise."""
     def _identity_fields() -> dict:
         fields = {}
         username_env = WEBHOOK_USERNAME
@@ -129,8 +130,10 @@ def post_to_discord(payload: dict):
     resp = requests.post(DISCORD_WEBHOOK_URL, json=final_payload, headers={"Content-Type": "application/json"}, timeout=10)
     if resp.status_code not in (200, 204):
         print(f"[WARN] Discord returned {resp.status_code}: {resp.text}", file=sys.stderr)
+        return False
     else:
         print(f"[OK] Discord notified (status {resp.status_code})")
+        return True
 
 def incident_embed(incident: dict) -> dict:
     embed_url = EMBED_LINK_URL or STATUS_PAGE_URL
@@ -254,6 +257,7 @@ def main():
     current_incident = data.get("incident")
 
     last_incident = state.get("last_incident")
+    last_incident_post_successful = state.get("last_incident_post_successful", True)
 
     if current_incident:
         inc_id = current_incident.get("id")
@@ -265,16 +269,27 @@ def main():
             notify_incident = True
         elif last_incident.get("lastUpdatedDate") != current_incident.get("lastUpdatedDate"):
             notify_incident = True
+        elif not last_incident_post_successful:
+            # Retry posting if the last attempt failed
+            notify_incident = True
 
         if notify_incident:
             print(f"[INFO] Posting incident: {current_incident.get('title')}")
-            post_to_discord(incident_embed(current_incident))
-            state["last_incident"] = current_incident
-            changed = True
+            post_success = post_to_discord(incident_embed(current_incident))
+            if post_success:
+                state["last_incident"] = current_incident
+                state["last_incident_post_successful"] = True
+                changed = True
+            else:
+                # Save incident data but mark post as failed, so we retry next time
+                state["last_incident"] = current_incident
+                state["last_incident_post_successful"] = False
+                changed = True
     else:
         if last_incident is not None:
             print("[INFO] Incident cleared (no longer pinned)")
             state["last_incident"] = None
+            state["last_incident_post_successful"] = True
             changed = True
 
     current_maintenances = data.get("maintenanceList") or []
@@ -294,15 +309,19 @@ def main():
         elif last_entry.get("title") != maint.get("title") or \
             last_entry.get("description") != maint.get("description"):
             notify_maint = True
+        elif not last_entry.get("post_successful", True):
+            # Retry posting if the last attempt failed
+            notify_maint = True
 
         if notify_maint:
             print(f"[INFO] Posting maintenance '{maint.get('title')}' (phase={current_phase})")
-            post_to_discord(maintenance_embed(maint))
+            post_success = post_to_discord(maintenance_embed(maint))
             last_maintenance_map[mid] = {
                 "id":          mid,
                 "title": maint.get("title"),
                 "description": maint.get("description"),
                 "phase": current_phase,
+                "post_successful": post_success,
             }
             changed = True
 
