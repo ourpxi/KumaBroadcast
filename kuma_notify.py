@@ -1,27 +1,18 @@
 #!/usr/bin/env python3
 
-import re
-import json
-import os
-import sys
-import ast
-import math
-import requests
+import re, json, os, sys, ast, math, requests
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
 
-# URL of the Uptime Kuma status page to monitor
 def load_dotenv(dotenv_path: Path) -> None:
     if not dotenv_path.exists():
         return
-
     with open(dotenv_path) as dotenv_file:
         for raw_line in dotenv_file:
             line = raw_line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
-
             key, value = line.split("=", 1)
             key = key.strip()
             value = value.strip().strip('"').strip("'")
@@ -40,11 +31,12 @@ def required_env(name: str) -> str:
 
 
 STATUS_PAGE_URL = required_env("STATUS_PAGE_URL")
-
-# Discord webhook URL
 DISCORD_WEBHOOK_URL = required_env("DISCORD_WEBHOOK_URL")
+EMBED_LINK_URL = os.getenv("EMBED_LINK_URL")
 
-EMBED_LINK_URL = os.getenv("EMBED_LINK_URL")  # Optional URL of the embed title to (defaults to STATUS_PAGE_URL if None)
+# Optional webhook profile
+WEBHOOK_USERNAME = os.getenv("WEBHOOK_USERNAME")
+WEBHOOK_AVATAR = os.getenv("WEBHOOK_AVATAR")
 
 INCIDENT_COLORS = {
     "primary": 0x5CDC8A,
@@ -55,8 +47,8 @@ INCIDENT_COLORS = {
     "dark": 0x262A2D,
 }
 MAINTENANCE_COLOR = 0x1D49F5
-
 STATE_FILE = Path(__file__).parent / "kuma_state.json"
+
 
 def js_to_dict(js_text: str) -> dict:
     js_text = re.sub(r'\bundefined\b', 'null', js_text)
@@ -67,24 +59,18 @@ def js_to_dict(js_text: str) -> dict:
     js_text = re.sub(r'"("(?:[^"\\]|\\.)*")"', r'\1', js_text)
     return json.loads(js_text)
 
+
 def fetch_preload_data(url: str) -> dict:
     """Download the status page and extract window.preloadData."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (kuma-notify/1.0)"
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (kuma-notify/1.0)"}
     resp = requests.get(url, headers=headers, timeout=15)
     resp.raise_for_status()
     html = resp.text
-
-    match = re.search(
-        r"window\.preloadData\s*=\s*(\{.*?\})\s*;?\s*\n",
-        html,
-        re.DOTALL
-    )
+    match = re.search(r"window\.preloadData\s*=\s*(\{.*?\})\s*;?\s*\n", html, re.DOTALL)
     if not match:
         raise ValueError("window.preloadData not found in page HTML")
-
     return js_to_dict(match.group(1))
+
 
 def load_state() -> dict:
     if STATE_FILE.exists():
@@ -92,9 +78,11 @@ def load_state() -> dict:
             return json.load(f)
     return {"last_incident": None, "last_maintenance": {}}
 
+
 def save_state(state: dict):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
+
 
 def html_to_discord_markdown(html_content: str) -> str:
     text = html_content
@@ -112,20 +100,33 @@ def html_to_discord_markdown(html_content: str) -> str:
     text = re.sub(r'<li>(.*?)</li>', r'• \1\n', text, flags=re.S)
     text = re.sub(r'<[uo]l>(.*?)</[uo]l>', r'\1', text, flags=re.S)
     text = re.sub(r'<[^>]+>', '', text)
-    entities = [('&amp;', '&'), ('&lt;', '<'), ('&gt;', '>'),
-                ('&quot;', '"'), ('&#39;', "'"), ('&nbsp;', ' ')]
+    entities = [('&amp;', '&'), ('&lt;', '<'), ('&gt;', '>'), ('&quot;', '"'), ('&#39;', "'"), ('&nbsp;', ' ')]
     for ent, char in entities:
         text = text.replace(ent, char)
     return text.strip()
 
+
 def post_to_discord(payload: dict):
-    """Send an embed payload to the configured Discord webhook."""
-    resp = requests.post(
-        DISCORD_WEBHOOK_URL,
-        json=payload,
-        headers={"Content-Type": "application/json"},
-        timeout=10
-    )
+    def _identity_fields() -> dict:
+        fields = {}
+        username_env = WEBHOOK_USERNAME
+        avatar_env = WEBHOOK_AVATAR
+        if username_env is None:
+            fields["username"] = "KumaSentinel"
+        elif isinstance(username_env, str) and username_env.strip().lower() == "none":
+            pass
+        elif username_env != "":
+            fields["username"] = username_env
+        if avatar_env is None:
+            fields["avatar_url"] = "https://github.com/ourpxi/Kuma2Discord/blob/main/avatar.png?raw=true"
+        elif isinstance(avatar_env, str) and avatar_env.strip().lower() == "none":
+            pass
+        elif avatar_env != "":
+            fields["avatar_url"] = avatar_env
+        return fields
+    meta = _identity_fields()
+    final_payload = {**meta, **payload}
+    resp = requests.post(DISCORD_WEBHOOK_URL, json=final_payload, headers={"Content-Type": "application/json"}, timeout=10)
     if resp.status_code not in (200, 204):
         print(f"[WARN] Discord returned {resp.status_code}: {resp.text}", file=sys.stderr)
     else:
@@ -136,7 +137,6 @@ def incident_embed(incident: dict) -> dict:
     style = incident.get("style", "light")
     color = INCIDENT_COLORS.get(style, INCIDENT_COLORS["light"])
     description = html_to_discord_markdown(incident.get("content", ""))
-
     return {
         "content": None,
         "embeds": [{
