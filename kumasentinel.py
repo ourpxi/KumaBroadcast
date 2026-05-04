@@ -51,13 +51,51 @@ STATE_FILE = Path(__file__).parent / "kuma_state.json"
 
 
 def js_to_dict(js_text: str) -> dict:
+    # Normalize some JS-only literals
     js_text = re.sub(r'\bundefined\b', 'null', js_text)
     js_text = re.sub(r'\bNaN\b', 'null', js_text)
     js_text = re.sub(r'\bInfinity\b', 'null', js_text)
-    js_text = js_text.replace("'", '"')
-    js_text = re.sub(r'(?<!")\b([a-zA-Z_]\w*)\s*(?=:)', r'"\1"', js_text)
-    js_text = re.sub(r'"("(?:[^"\\]|\\.)*")"', r'\1', js_text)
-    return json.loads(js_text)
+
+    # Convert single-quoted JS strings to JSON double-quoted strings (preserve escapes)
+    def _replace_single_quoted(m: re.Match) -> str:
+        inner = m.group(1)
+        inner = inner.replace('"', '\\"')
+        return f'"{inner}"'
+
+    js_text = re.sub(r"'((?:\\.|[^\\'])*)'", _replace_single_quoted, js_text)
+
+    # Quote unquoted object keys: foo: -> "foo":
+    js_text = re.sub(r'(?<!["\w])([a-zA-Z_]\w*)\s*(?=\s*:\s*)', r'"\1"', js_text)
+
+    try:
+        return json.loads(js_text)
+    except json.JSONDecodeError as e:
+        # Provide helpful debug output with a surrounding snippet
+        idx = e.pos if hasattr(e, 'pos') else None
+        snippet = js_text
+        if isinstance(idx, int):
+            start = max(0, idx - 80)
+            end = min(len(js_text), idx + 80)
+            snippet = js_text[start:end]
+        print(f"[ERROR] JSON parse failed: {e}\n---- snippet ----\n{snippet}\n---- end snippet ----", file=sys.stderr)
+        # Try a small set of heuristics to fix commonly observed malformed markdown/link patterns
+        sanitized = js_text
+        sanitized = sanitized.replace('("https"://', '(https://')
+        sanitized = sanitized.replace('("http"://', '(http://')
+        sanitized = sanitized.replace("(\"https\"://", '(https://')
+        sanitized = sanitized.replace("(\"http\"://", '(http://')
+        try:
+            return json.loads(sanitized)
+        except json.JSONDecodeError:
+            # Save the failing snippet to a file for offline inspection
+            dump_path = Path(__file__).parent / 'preload_debug.json'
+            try:
+                with open(dump_path, 'w') as df:
+                    df.write(js_text)
+                print(f"[ERROR] Wrote failing preloadData to {dump_path}", file=sys.stderr)
+            except Exception:
+                pass
+            raise
 
 
 def fetch_preload_data(url: str) -> dict:
@@ -316,18 +354,38 @@ def main():
         if notify_maint:
             print(f"[INFO] Posting maintenance '{maint.get('title')}' (phase={current_phase})")
             post_success = post_to_discord(maintenance_embed(maint))
+            timeslots = maint.get("timeslotList", [])
+            is_manual = not bool(timeslots)
             last_maintenance_map[mid] = {
                 "id":          mid,
                 "title": maint.get("title"),
                 "description": maint.get("description"),
                 "phase": current_phase,
                 "post_successful": post_success,
+                "is_manual": is_manual,
             }
             changed = True
 
     for mid in list(last_maintenance_map.keys()):
         if mid not in current_map:
-            print(f"[INFO] Maintenance {mid} removed from page - pruning state")
+            last_entry = last_maintenance_map.get(mid, {})
+            # If the maintenance was active when removed, post a 'Maintenance Ended' notification
+            if last_entry.get("phase") == "active":
+                print(f"[INFO] Manual maintenance {mid} ended - posting end notification")
+                embed = {
+                    "content": None,
+                    "embeds": [{
+                        "title": last_entry.get("title", "Maintenance"),
+                        "description": html_to_discord_markdown(last_entry.get("description", "") or ""),
+                        "url": EMBED_LINK_URL or STATUS_PAGE_URL,
+                        "color": MAINTENANCE_COLOR,
+                        "author": {"name": "Maintenance Ended"},
+                    }],
+                    "attachments": []
+                }
+                post_to_discord(embed)
+            else:
+                print(f"[INFO] Maintenance {mid} removed from page - pruning state")
             del last_maintenance_map[mid]
             changed = True
 
