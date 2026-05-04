@@ -12,12 +12,39 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 
 # URL of the Uptime Kuma status page to monitor
-STATUS_PAGE_URL = "https://example.com/status/primary"
+def load_dotenv(dotenv_path: Path) -> None:
+    if not dotenv_path.exists():
+        return
+
+    with open(dotenv_path) as dotenv_file:
+        for raw_line in dotenv_file:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            os.environ.setdefault(key, value)
+
+
+load_dotenv(Path(__file__).parent / ".env")
+
+
+def required_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        print(f"[ERROR] Missing required environment variable: {name}", file=sys.stderr)
+        sys.exit(1)
+    return value
+
+
+STATUS_PAGE_URL = required_env("STATUS_PAGE_URL")
 
 # Discord webhook URL
-DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN"
+DISCORD_WEBHOOK_URL = required_env("DISCORD_WEBHOOK_URL")
 
-EMBED_LINK_URL = None  # Optional URL of the embed title to (defaults to STATUS_PAGE_URL if None)
+EMBED_LINK_URL = os.getenv("EMBED_LINK_URL")  # Optional URL of the embed title to (defaults to STATUS_PAGE_URL if None)
 
 INCIDENT_COLORS = {
     "primary": 0x5CDC8A,
