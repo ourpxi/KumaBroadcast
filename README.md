@@ -79,3 +79,7 @@ This script is designed to run as a cronjob for periodic monitoring. The recomme
 
 > [!NOTE]
 > This will does scrape monitor status since discord up/down notifications are already a feature of uptime kuma
+
+## Credits
+
+The default avatar used by the webhook is based on the **activity** icon from [Lucide Icons](https://github.com/lucide-icons/lucide)
