@@ -118,7 +118,7 @@ def post_to_discord(payload: dict):
         elif username_env != "":
             fields["username"] = username_env
         if avatar_env is None:
-            fields["avatar_url"] = "https://github.com/ourpxi/Kuma2Discord/blob/main/avatar.png?raw=true"
+            fields["avatar_url"] = "https://github.com/ourpxi/KumaSentinel/blob/main/avatar.png?raw=true"
         elif isinstance(avatar_env, str) and avatar_env.strip().lower() == "none":
             pass
         elif avatar_env != "":
