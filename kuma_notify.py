@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+
+import re
+import json
+import os
+import sys
+import ast
+import math
+import requests
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+from pathlib import Path
+
+# URL of the Uptime Kuma status page to monitor
+STATUS_PAGE_URL = "https://example.com/status/primary"
+
+# Discord webhook URL
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN"
+
+EMBED_LINK_URL = None  # Optional URL of the embed title to (defaults to STATUS_PAGE_URL if None)
+
+INCIDENT_COLORS = {
+    "primary": 0x5CDC8A,
+    "info": 0x15C9EF,
+    "warning": 0xF8A20E,
+    "danger": 0xDB3847,
+    "light": 0xF8F9FA,
+    "dark": 0x262A2D,
+}
+MAINTENANCE_COLOR = 0x1D49F5
+
+STATE_FILE = Path(__file__).parent / "kuma_state.json"
+
+def js_to_dict(js_text: str) -> dict:
+    js_text = re.sub(r'\bundefined\b', 'null', js_text)
+    js_text = re.sub(r'\bNaN\b', 'null', js_text)
+    js_text = re.sub(r'\bInfinity\b', 'null', js_text)
+    js_text = js_text.replace("'", '"')
+    js_text = re.sub(r'(?<!")\b([a-zA-Z_]\w*)\s*(?=:)', r'"\1"', js_text)
+    js_text = re.sub(r'"("(?:[^"\\]|\\.)*")"', r'\1', js_text)
+    return json.loads(js_text)
+
+def fetch_preload_data(url: str) -> dict:
+    """Download the status page and extract window.preloadData."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (kuma-notify/1.0)"
+    }
+    resp = requests.get(url, headers=headers, timeout=15)
+    resp.raise_for_status()
+    html = resp.text
+
+    match = re.search(
+        r"window\.preloadData\s*=\s*(\{.*?\})\s*;?\s*\n",
+        html,
+        re.DOTALL
+    )
+    if not match:
+        raise ValueError("window.preloadData not found in page HTML")
+
+    return js_to_dict(match.group(1))
+
+def load_state() -> dict:
+    if STATE_FILE.exists():
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    return {"last_incident": None, "last_maintenance": {}}
+
+def save_state(state: dict):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+def html_to_discord_markdown(html_content: str) -> str:
+    text = html_content
+    text = re.sub(r'<strong>(.*?)</strong>', r'**\1**', text, flags=re.S)
+    text = re.sub(r'<b>(.*?)</b>', r'**\1**', text, flags=re.S)
+    text = re.sub(r'<em>(.*?)</em>', r'*\1*', text, flags=re.S)
+    text = re.sub(r'<i>(.*?)</i>', r'*\1*', text, flags=re.S)
+    text = re.sub(r'<s>(.*?)</s>', r'~~\1~~', text, flags=re.S)
+    text = re.sub(r'<del>(.*?)</del>', r'~~\1~~', text, flags=re.S)
+    text = re.sub(r'<code>(.*?)</code>', r'`\1`', text, flags=re.S)
+    text = re.sub(r'<pre>(.*?)</pre>', r'```\n\1\n```', text, flags=re.S)
+    text = re.sub(r'<a[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', r'[\2](\1)', text, flags=re.S)
+    text = re.sub(r'<br\s*/?>', '\n', text)
+    text = re.sub(r'<p>(.*?)</p>', r'\1\n', text, flags=re.S)
+    text = re.sub(r'<li>(.*?)</li>', r'• \1\n', text, flags=re.S)
+    text = re.sub(r'<[uo]l>(.*?)</[uo]l>', r'\1', text, flags=re.S)
+    text = re.sub(r'<[^>]+>', '', text)
+    entities = [('&amp;', '&'), ('&lt;', '<'), ('&gt;', '>'),
+                ('&quot;', '"'), ('&#39;', "'"), ('&nbsp;', ' ')]
+    for ent, char in entities:
+        text = text.replace(ent, char)
+    return text.strip()
+
+def post_to_discord(payload: dict):
+    """Send an embed payload to the configured Discord webhook."""
+    resp = requests.post(
+        DISCORD_WEBHOOK_URL,
+        json=payload,
+        headers={"Content-Type": "application/json"},
+        timeout=10
+    )
+    if resp.status_code not in (200, 204):
+        print(f"[WARN] Discord returned {resp.status_code}: {resp.text}", file=sys.stderr)
+    else:
+        print(f"[OK] Discord notified (status {resp.status_code})")
+
+def incident_embed(incident: dict) -> dict:
+    embed_url = EMBED_LINK_URL or STATUS_PAGE_URL
+    style = incident.get("style", "light")
+    color = INCIDENT_COLORS.get(style, INCIDENT_COLORS["light"])
+    description = html_to_discord_markdown(incident.get("content", ""))
+
+    return {
+        "content": None,
+        "embeds": [{
+            "title": incident.get("title", "Incident"),
+            "description": description,
+            "url": embed_url,
+            "color": color,
+        }],
+        "attachments": []
+    }
+
+def dt_from_iso_tz(iso_str: str, tz_name: str) -> datetime:
+    naive = datetime.fromisoformat(iso_str)
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = timezone.utc
+    local_dt = naive.replace(tzinfo=tz)
+    return local_dt.astimezone(timezone.utc)
+
+def maintenance_embed(maintenance: dict) -> dict:
+    embed_url = EMBED_LINK_URL or STATUS_PAGE_URL
+    title = maintenance.get("title", "Maintenance")
+    description = html_to_discord_markdown(maintenance.get("description", ""))
+    tz_name = maintenance.get("timezone") or maintenance.get("timezoneOption") or "UTC"
+
+    timeslots = maintenance.get("timeslotList", [])
+    is_manual = not timeslots
+
+    now_utc = datetime.now(timezone.utc)
+
+    fields = []
+    author_name = "Scheduled Maintenance"
+
+    if not is_manual and timeslots:
+        slot = timeslots[0]
+        start_dt = dt_from_iso_tz(slot["startDate"], tz_name)
+        end_dt = dt_from_iso_tz(slot["endDate"], tz_name)
+
+        start_ts = int(start_dt.timestamp())
+        end_ts = int(end_dt.timestamp())
+
+        if now_utc < start_dt:
+            author_name = "Scheduled Maintenance"
+        elif start_dt <= now_utc < end_dt:
+            author_name = "Maintenance Started"
+        else:
+            author_name = "Maintenance Ended"
+
+        fields = [
+            {
+                "name": "Start Date",
+                "value": f"<t:{start_ts}:F> <t:{start_ts}:R>"
+            },
+            {
+                "name": "End Date",
+                "value": f"<t:{end_ts}:F> <t:{end_ts}:R>"
+            }
+        ]
+    else:
+        author_name = "Maintenance Started"
+
+    affected = _affected_monitors_field(maintenance)
+    if affected:
+        fields.append({"name": "Affected Services", "value": affected})
+
+    embed = {
+        "title": title,
+        "description": description,
+        "url": embed_url,
+        "color": MAINTENANCE_COLOR,
+        "author": {"name": author_name},
+    }
+    if fields:
+        embed["fields"] = fields
+
+    return {"content": None, "embeds": [embed], "attachments": []}
+
+def _affected_monitors_field(maintenance: dict) -> str:
+    monitors = maintenance.get("monitorList") or []
+    if not monitors:
+        return ""
+    names = [m.get("name", str(m.get("id", ""))) for m in monitors]
+    return ", ".join(names)
+
+def maintenance_phase(maintenance: dict) -> str:
+    timeslots = maintenance.get("timeslotList", [])
+    if not timeslots:
+        return "active"
+
+    tz_name = maintenance.get("timezone") or "UTC"
+    slot = timeslots[0]
+    start_dt = dt_from_iso_tz(slot["startDate"], tz_name)
+    end_dt = dt_from_iso_tz(slot["endDate"], tz_name)
+    now_utc = datetime.now(timezone.utc)
+
+    if now_utc < start_dt:
+        return "scheduled"
+    elif now_utc < end_dt:
+        return "active"
+    else:
+        return "ended"
+
+def main():
+    print(f"[INFO] Fetching {STATUS_PAGE_URL}")
+    try:
+        data = fetch_preload_data(STATUS_PAGE_URL)
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch status page: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    state = load_state()
+    changed = False
+
+    current_incident = data.get("incident")
+
+    last_incident = state.get("last_incident")
+
+    if current_incident:
+        inc_id = current_incident.get("id")
+
+        notify_incident = False
+        if last_incident is None:
+            notify_incident = True
+        elif last_incident.get("id") != inc_id:
+            notify_incident = True
+        elif last_incident.get("lastUpdatedDate") != current_incident.get("lastUpdatedDate"):
+            notify_incident = True
+
+        if notify_incident:
+            print(f"[INFO] Posting incident: {current_incident.get('title')}")
+            post_to_discord(incident_embed(current_incident))
+            state["last_incident"] = current_incident
+            changed = True
+    else:
+        if last_incident is not None:
+            print("[INFO] Incident cleared (no longer pinned)")
+            state["last_incident"] = None
+            changed = True
+
+    current_maintenances = data.get("maintenanceList") or []
+    last_maintenance_map: dict = state.get("last_maintenance") or {}
+
+    current_map = {str(m["id"]): m for m in current_maintenances}
+
+    for mid, maint in current_map.items():
+        current_phase = maintenance_phase(maint)
+        last_entry = last_maintenance_map.get(mid)
+
+        notify_maint = False
+        if last_entry is None:
+            notify_maint = True
+        elif last_entry.get("phase") != current_phase:
+            notify_maint = True
+        elif last_entry.get("title") != maint.get("title") or \
+            last_entry.get("description") != maint.get("description"):
+            notify_maint = True
+
+        if notify_maint:
+            print(f"[INFO] Posting maintenance '{maint.get('title')}' (phase={current_phase})")
+            post_to_discord(maintenance_embed(maint))
+            last_maintenance_map[mid] = {
+                "id":          mid,
+                "title": maint.get("title"),
+                "description": maint.get("description"),
+                "phase": current_phase,
+            }
+            changed = True
+
+    for mid in list(last_maintenance_map.keys()):
+        if mid not in current_map:
+            print(f"[INFO] Maintenance {mid} removed from page - pruning state")
+            del last_maintenance_map[mid]
+            changed = True
+
+    state["last_maintenance"] = last_maintenance_map
+
+    if changed:
+        save_state(state)
+        print("[INFO] State saved.")
+    else:
+        print("[INFO] No changes detected, nothing to post.")
+
+
+if __name__ == "__main__":
+    main()
