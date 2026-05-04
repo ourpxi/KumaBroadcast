@@ -1,2 +1,2 @@
-# Kuma2Discord
+# KumaSentinel
  
