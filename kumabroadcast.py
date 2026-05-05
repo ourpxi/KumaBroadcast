@@ -151,13 +151,13 @@ def post_to_discord(payload: dict) -> bool:
         username_env = WEBHOOK_USERNAME
         avatar_env = WEBHOOK_AVATAR
         if username_env is None:
-            fields["username"] = "KumaSentinel"
+            fields["username"] = "KumaBroadcast"
         elif isinstance(username_env, str) and username_env.strip().lower() == "none":
             pass
         elif username_env != "":
             fields["username"] = username_env
         if avatar_env is None:
-            fields["avatar_url"] = "https://github.com/ourpxi/KumaSentinel/blob/main/avatar.png?raw=true"
+            fields["avatar_url"] = "https://github.com/ourpxi/KumaBroadcast/blob/main/avatar.png?raw=true"
         elif isinstance(avatar_env, str) and avatar_env.strip().lower() == "none":
             pass
         elif avatar_env != "":

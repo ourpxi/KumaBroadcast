@@ -1,4 +1,4 @@
-# KumaSentinel
+# KumaBroadcast
 This script scrapes uptime kuma status pages and publishes incidents and maintenance posts to discord via webhooks
 
 ## Showcase
@@ -55,13 +55,18 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOO
 
 ```env
 EMBED_LINK_URL=https://your-custom-link.com
-WEBHOOK_USERNAME=KumaSentinel
+WEBHOOK_USERNAME=KumaBroadcast
 WEBHOOK_AVATAR=https://example.com/avatar.png
 ```
 
 - `EMBED_LINK_URL`: Custom URL for Discord embed links (defaults to `STATUS_PAGE_URL`)
+<<<<<<< Updated upstream
 - `WEBHOOK_USERNAME`: Username displayed in Discord messages (defaults to "KumaSentinel", set to "none" to disable)
 - `WEBHOOK_AVATAR`: Avatar URL for Discord messages (set to "none" to disable)
+=======
+- `WEBHOOK_USERNAME`: Username displayed in Discord messages (defaults to "KumaBroadcast", set to "none" to disable)
+- `WEBHOOK_AVATAR`: Avatar URL for Discord messages (defaults to built-in avatar, set to "none" to disable)
+>>>>>>> Stashed changes
 
 ### Running the Script
 
