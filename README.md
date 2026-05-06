@@ -61,9 +61,12 @@ WEBHOOK_AVATAR=https://example.com/avatar.png
 
 - `EMBED_LINK_URL`: Custom URL for Discord embed links (defaults to `STATUS_PAGE_URL`)
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 - `WEBHOOK_USERNAME`: Username displayed in Discord messages (defaults to "KumaSentinel", set to "none" to disable)
 - `WEBHOOK_AVATAR`: Avatar URL for Discord messages (set to "none" to disable)
 =======
+=======
+>>>>>>> Stashed changes
 - `WEBHOOK_USERNAME`: Username displayed in Discord messages (defaults to "KumaBroadcast", set to "none" to disable)
 - `WEBHOOK_AVATAR`: Avatar URL for Discord messages (defaults to built-in avatar, set to "none" to disable)
 >>>>>>> Stashed changes
