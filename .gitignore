@@ -1,3 +1,27 @@
-
+# Environment
 .env
+
+# Application state
 kuma_state.json
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyc
+
+# Debug artifacts (written by kumabroadcast at runtime)
+preload_debug.json
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# OS files
+.DS_Store
+Thumbs.db

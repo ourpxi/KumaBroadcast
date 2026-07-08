@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 
-import re, json, os, sys, ast, math, requests
+import json
+import os
+import re
+import sys
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import requests
+
+
+DEFAULT_AVATAR_URL = "https://github.com/ourpxi/KumaBroadcast/blob/main/avatar.png?raw=true"
 
 def load_dotenv(dotenv_path: Path) -> None:
     if not dotenv_path.exists():
@@ -19,9 +27,6 @@ def load_dotenv(dotenv_path: Path) -> None:
             os.environ.setdefault(key, value)
 
 
-load_dotenv(Path(__file__).parent / ".env")
-
-
 def required_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
@@ -29,14 +34,6 @@ def required_env(name: str) -> str:
         sys.exit(1)
     return value
 
-
-STATUS_PAGE_URL = required_env("STATUS_PAGE_URL")
-DISCORD_WEBHOOK_URL = required_env("DISCORD_WEBHOOK_URL")
-EMBED_LINK_URL = os.getenv("EMBED_LINK_URL")
-
-# Optional webhook profile
-WEBHOOK_USERNAME = os.getenv("WEBHOOK_USERNAME")
-WEBHOOK_AVATAR = os.getenv("WEBHOOK_AVATAR")
 
 INCIDENT_COLORS = {
     "primary": 0x5CDC8A,
@@ -47,7 +44,18 @@ INCIDENT_COLORS = {
     "dark": 0x262A2D,
 }
 MAINTENANCE_COLOR = 0x1D49F5
-STATE_FILE = Path(__file__).parent / "kuma_state.json"
+
+
+def build_config() -> dict:
+    load_dotenv(Path.cwd() / ".env")
+    return {
+        "status_page_url": required_env("STATUS_PAGE_URL"),
+        "discord_webhook_url": required_env("DISCORD_WEBHOOK_URL"),
+        "embed_link_url": os.getenv("EMBED_LINK_URL"),
+        "webhook_username": os.getenv("WEBHOOK_USERNAME"),
+        "webhook_avatar": os.getenv("WEBHOOK_AVATAR"),
+        "state_file": Path(os.getenv("KUMA_STATE_FILE", "kuma_state.json")),
+    }
 
 
 def js_to_dict(js_text: str) -> dict:
@@ -110,15 +118,16 @@ def fetch_preload_data(url: str) -> dict:
     return js_to_dict(match.group(1))
 
 
-def load_state() -> dict:
-    if STATE_FILE.exists():
-        with open(STATE_FILE) as f:
+def load_state(state_file: Path) -> dict:
+    if state_file.exists():
+        with open(state_file) as f:
             return json.load(f)
     return {"last_incident": None, "last_incident_post_successful": True, "last_maintenance": {}}
 
 
-def save_state(state: dict):
-    with open(STATE_FILE, "w") as f:
+def save_state(state: dict, state_file: Path):
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(state_file, "w") as f:
         json.dump(state, f, indent=2)
 
 
@@ -144,12 +153,12 @@ def html_to_discord_markdown(html_content: str) -> str:
     return text.strip()
 
 
-def post_to_discord(payload: dict) -> bool:
+def post_to_discord(payload: dict, config: dict) -> bool:
     """Post payload to Discord webhook. Returns True if successful (200 or 204), False otherwise."""
     def _identity_fields() -> dict:
         fields = {}
-        username_env = WEBHOOK_USERNAME
-        avatar_env = WEBHOOK_AVATAR
+        username_env = config["webhook_username"]
+        avatar_env = config["webhook_avatar"]
         if username_env is None:
             fields["username"] = "KumaBroadcast"
         elif isinstance(username_env, str) and username_env.strip().lower() == "none":
@@ -157,7 +166,7 @@ def post_to_discord(payload: dict) -> bool:
         elif username_env != "":
             fields["username"] = username_env
         if avatar_env is None:
-            fields["avatar_url"] = "https://github.com/ourpxi/KumaBroadcast/blob/main/avatar.png?raw=true"
+            fields["avatar_url"] = DEFAULT_AVATAR_URL
         elif isinstance(avatar_env, str) and avatar_env.strip().lower() == "none":
             pass
         elif avatar_env != "":
@@ -165,7 +174,7 @@ def post_to_discord(payload: dict) -> bool:
         return fields
     meta = _identity_fields()
     final_payload = {**meta, **payload}
-    resp = requests.post(DISCORD_WEBHOOK_URL, json=final_payload, headers={"Content-Type": "application/json"}, timeout=10)
+    resp = requests.post(config["discord_webhook_url"], json=final_payload, headers={"Content-Type": "application/json"}, timeout=10)
     if resp.status_code not in (200, 204):
         print(f"[WARN] Discord returned {resp.status_code}: {resp.text}", file=sys.stderr)
         return False
@@ -173,8 +182,8 @@ def post_to_discord(payload: dict) -> bool:
         print(f"[OK] Discord notified (status {resp.status_code})")
         return True
 
-def incident_embed(incident: dict) -> dict:
-    embed_url = EMBED_LINK_URL or STATUS_PAGE_URL
+def incident_embed(incident: dict, config: dict) -> dict:
+    embed_url = config["embed_link_url"] or config["status_page_url"]
     style = incident.get("style", "light")
     color = INCIDENT_COLORS.get(style, INCIDENT_COLORS["light"])
     description = html_to_discord_markdown(incident.get("content", ""))
@@ -198,8 +207,8 @@ def dt_from_iso_tz(iso_str: str, tz_name: str) -> datetime:
     local_dt = naive.replace(tzinfo=tz)
     return local_dt.astimezone(timezone.utc)
 
-def maintenance_embed(maintenance: dict) -> dict:
-    embed_url = EMBED_LINK_URL or STATUS_PAGE_URL
+def maintenance_embed(maintenance: dict, config: dict) -> dict:
+    embed_url = config["embed_link_url"] or config["status_page_url"]
     title = maintenance.get("title", "Maintenance")
     description = html_to_discord_markdown(maintenance.get("description", ""))
     tz_name = maintenance.get("timezone") or maintenance.get("timezoneOption") or "UTC"
@@ -282,14 +291,16 @@ def maintenance_phase(maintenance: dict) -> str:
         return "ended"
 
 def main():
-    print(f"[INFO] Fetching {STATUS_PAGE_URL}")
+    config = build_config()
+
+    print(f"[INFO] Fetching {config['status_page_url']}")
     try:
-        data = fetch_preload_data(STATUS_PAGE_URL)
+        data = fetch_preload_data(config["status_page_url"])
     except Exception as e:
         print(f"[ERROR] Failed to fetch status page: {e}", file=sys.stderr)
         sys.exit(1)
 
-    state = load_state()
+    state = load_state(config["state_file"])
     changed = False
 
     current_incident = data.get("incident")
@@ -313,7 +324,7 @@ def main():
 
         if notify_incident:
             print(f"[INFO] Posting incident: {current_incident.get('title')}")
-            post_success = post_to_discord(incident_embed(current_incident))
+            post_success = post_to_discord(incident_embed(current_incident, config), config)
             if post_success:
                 state["last_incident"] = current_incident
                 state["last_incident_post_successful"] = True
@@ -353,7 +364,7 @@ def main():
 
         if notify_maint:
             print(f"[INFO] Posting maintenance '{maint.get('title')}' (phase={current_phase})")
-            post_success = post_to_discord(maintenance_embed(maint))
+            post_success = post_to_discord(maintenance_embed(maint, config), config)
             timeslots = maint.get("timeslotList", [])
             is_manual = not bool(timeslots)
             last_maintenance_map[mid] = {
@@ -377,13 +388,13 @@ def main():
                     "embeds": [{
                         "title": last_entry.get("title", "Maintenance"),
                         "description": html_to_discord_markdown(last_entry.get("description", "") or ""),
-                        "url": EMBED_LINK_URL or STATUS_PAGE_URL,
+                        "url": config["embed_link_url"] or config["status_page_url"],
                         "color": MAINTENANCE_COLOR,
                         "author": {"name": "Maintenance Ended"},
                     }],
                     "attachments": []
                 }
-                post_to_discord(embed)
+                post_to_discord(embed, config)
             else:
                 print(f"[INFO] Maintenance {mid} removed from page - pruning state")
             del last_maintenance_map[mid]
@@ -392,7 +403,7 @@ def main():
     state["last_maintenance"] = last_maintenance_map
 
     if changed:
-        save_state(state)
+        save_state(state, config["state_file"])
         print("[INFO] State saved.")
     else:
         print("[INFO] No changes detected, nothing to post.")

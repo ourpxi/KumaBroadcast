@@ -31,15 +31,20 @@ The script will try to render markdown syntax from incidents and maintenance pos
 
 ## Usage
 
+### Installation
+
+```bash
+pip install kumabroadcast
+```
+
 ### Setup
 
-1. **Create a folder** for the script
-2. **Download** `kumasentinel.py` and move it to your folder
-3. **Create a `.env` configuration file** in the same directory
+1. **Install** the package (see above)
+2. **Create a `.env` configuration file** in the directory where you will run it
 
 ### Configuration
 
-Create a `.env` file in the script directory with the following variables:
+Create a `.env` file in the working directory with the following variables:
 
 #### Required Fields
 
@@ -57,24 +62,32 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOO
 EMBED_LINK_URL=https://your-custom-link.com
 WEBHOOK_USERNAME=KumaBroadcast
 WEBHOOK_AVATAR=https://example.com/avatar.png
+KUMA_STATE_FILE=kuma_state.json
 ```
 
 - `EMBED_LINK_URL`: Custom URL for Discord embed links (defaults to `STATUS_PAGE_URL`)
 - `WEBHOOK_USERNAME`: Username displayed in Discord messages (defaults to "KumaBroadcast", set to "none" to disable)
 - `WEBHOOK_AVATAR`: Avatar URL for Discord messages (defaults to built-in avatar, set to "none" to disable)
+- `KUMA_STATE_FILE`: Path to the local state file (defaults to `kuma_state.json` in the working directory)
 
 ### Running the Script
 
 This script is designed to run as a cronjob for periodic monitoring. The recommended interval is **every minute** for best accuracy, or **every 5 minutes** for less frequent checks.
 
+Run it with the installed console command:
+
+```bash
+kumabroadcast
+```
+
 #### Cron Example
 
 ```bash
 # Run every minute
-* * * * * /usr/bin/python3 /path/to/kumasentinel.py
+* * * * * cd /path/to/kumabroadcast-config && /usr/local/bin/kumabroadcast
 
 # Or run every 5 minutes
-*/5 * * * * /usr/bin/python3 /path/to/kumasentinel.py
+*/5 * * * * cd /path/to/kumabroadcast-config && /usr/local/bin/kumabroadcast
 ```
 
 > [!NOTE]
