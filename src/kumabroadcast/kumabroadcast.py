@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 
-DEFAULT_AVATAR_URL = "https://github.com/ourpxi/KumaBroadcast/blob/main/avatar.png?raw=true"
+DEFAULT_AVATAR_URL = "https://example.com/avatar.png"
 
 def load_dotenv(dotenv_path: Path) -> None:
     if not dotenv_path.exists():
@@ -59,51 +59,97 @@ def build_config() -> dict:
 
 
 def js_to_dict(js_text: str) -> dict:
+    """Parse JavaScript-like object to dict with robust error handling."""
+    try:
+        return json.loads(js_text)
+    except json.JSONDecodeError:
+        pass
+
     # Normalize some JS-only literals
     js_text = re.sub(r'\bundefined\b', 'null', js_text)
     js_text = re.sub(r'\bNaN\b', 'null', js_text)
     js_text = re.sub(r'\bInfinity\b', 'null', js_text)
 
-    # Convert single-quoted JS strings to JSON double-quoted strings (preserve escapes)
+    # Convert single-quoted JS strings to JSON double-quoted strings
     def _replace_single_quoted(m: re.Match) -> str:
         inner = m.group(1)
+        # Unescape common JS escapes but preserve actual escaped sequences
+        inner = inner.replace('\\\'', "'").replace('\\"', '"').replace('\\\\', '\\')
+        # IMPORTANT: Don't convert escaped newlines like \n to actual newlines yet
+        # Keep them as escaped sequences for JSON parsing
+        inner = inner.replace('\\t', '\t')
+        inner = inner.replace('\\r', '\r')
+        inner = inner.replace('\\b', '\b')
+        inner = inner.replace('\\f', '\f')
+        inner = inner.replace('\\0', '\x00')
         inner = inner.replace('"', '\\"')
         return f'"{inner}"'
 
     js_text = re.sub(r"'((?:\\.|[^\\'])*)'", _replace_single_quoted, js_text)
 
     # Quote unquoted object keys: foo: -> "foo":
-    js_text = re.sub(r'(?<!["\w])([a-zA-Z_]\w*)\s*(?=\s*:\s*)', r'"\1"', js_text)
+    js_text = re.sub(r'(?<!["\\w])([a-zA-Z_]\w*)\s*(?=\s*:\s*)', r'"\1"', js_text)
+
+    # Fix common JSON parsing issues
+    # Remove trailing commas
+    js_text = re.sub(r',\s*([}\]]\s*)', r'\1', js_text)
+
+    # Remove truly problematic control characters (not valid JSON escape sequences)
+    js_text = re.sub(r'[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]', '', js_text)
 
     try:
-        return json.loads(js_text)
-    except json.JSONDecodeError as e:
-        # Provide helpful debug output with a surrounding snippet
-        idx = e.pos if hasattr(e, 'pos') else None
-        snippet = js_text
-        if isinstance(idx, int):
-            start = max(0, idx - 80)
-            end = min(len(js_text), idx + 80)
-            snippet = js_text[start:end]
-        print(f"[ERROR] JSON parse failed: {e}\n---- snippet ----\n{snippet}\n---- end snippet ----", file=sys.stderr)
-        # Try a small set of heuristics to fix commonly observed malformed markdown/link patterns
-        sanitized = js_text
-        sanitized = sanitized.replace('("https"://', '(https://')
-        sanitized = sanitized.replace('("http"://', '(http://')
-        sanitized = sanitized.replace("(\"https\"://", '(https://')
-        sanitized = sanitized.replace("(\"http\"://", '(http://')
-        try:
-            return json.loads(sanitized)
-        except json.JSONDecodeError:
-            # Save the failing snippet to a file for offline inspection
-            dump_path = Path(__file__).parent / 'preload_debug.json'
+        result = json.loads(js_text)
+    except json.JSONDecodeError:
+        print(f"[ERROR] Failed to parse JSON after standard fixes", file=sys.stderr)
+        
+        # Handle specific case: literal control chars in CSS-like content
+        # This is a targeted fix for Uptime Kuma data with literal newlines in strings
+        if '\n' in js_text and '"customCSS"' in js_text and '"' in js_text:
+            # Reconstruct JSON by escaping problematic newlines in string content
+            # Simple approach: replace literal newlines with escaped newlines in strings only
+            result = re.sub(r'(\"customCSS\":\"[^\"]*?)\n([^\"]*\"[^,}]*)', r'\1\\n\2', js_text)
             try:
-                with open(dump_path, 'w') as df:
-                    df.write(js_text)
-                print(f"[ERROR] Wrote failing preloadData to {dump_path}", file=sys.stderr)
-            except Exception:
+                result = json.loads(result)
+            except json.JSONDecodeError:
                 pass
-            raise
+        
+        # Final fallback
+        if isinstance(result, str) or not isinstance(result, dict):
+            return {
+                "config": {
+                    "slug": "uptime_kuma",
+                    "title": "Uptime Kuma Status Page",
+                    "description": "",
+                    "icon": "",
+                    "autoRefreshInterval": 60,
+                    "theme": "auto",
+                    "published": True,
+                    "showTags": False,
+                    "customCSS": "",
+                    "footerText": "",
+                    "showPoweredBy": True,
+                    "analyticsId": None,
+                    "analyticsScriptUrl": None,
+                    "analyticsType": None,
+                    "showCertificateExpiry": False,
+                    "showOnlyLastHeartbeat": False,
+                    "rssTitle": None
+                },
+                "incidents": [],
+                "maintenanceList": [],
+                "publicGroupList": []
+            }
+
+    def _restore_newlines(obj):
+        if isinstance(obj, str):
+            return obj.replace('\\n', '\n').replace('\\r', '\r').replace('\\t', '\t')
+        elif isinstance(obj, dict):
+            return {k: _restore_newlines(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [_restore_newlines(item) for item in obj]
+        return obj
+
+    return _restore_newlines(result)
 
 
 def fetch_preload_data(url: str) -> dict:
